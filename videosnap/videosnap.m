@@ -32,6 +32,7 @@
 	console("  -w x.xx     Set delay before capturing starts (in seconds, default %.1fs) \n", DEFAULT_RECORDING_DELAY);
 	console("  -t x.xx     Set duration of video (in seconds)\n");
 	console("  -d device   Set the capture device (by name, use -l to list attached devices)\n");
+    console("  -a audio_device Set the audio capture device (by name, use -l to list attached devices)\n");
 	console("  --no-audio  Don't capture audio\n");
 	console("  -v          Turn ON verbose mode (OFF by default)\n");
 	console("  -h          Show help\n");
@@ -62,6 +63,7 @@
 
     // argument defaults
     AVCaptureDevice *device;
+    AVCaptureDevice *audio_device;
     NSString        *encodingPreset    = DEFAULT_ENCODING_PRESET;
     NSNumber        *delaySeconds      = [NSNumber numberWithFloat:DEFAULT_RECORDING_DELAY];
     NSNumber        *recordingDuration = nil;
@@ -75,6 +77,7 @@
         return 0;
     } else {
         [self discoverDevices];
+        [self discoverAudioDevices];
     }
 
     for (int i = 1; i < argc; i++) {
@@ -101,6 +104,16 @@
                     break;
 
                 // device
+                case 'a':
+                    if (i+1 < argc){
+                        audio_device = [self deviceAudioNamed:argValue];
+                        if (audio_device == nil) {
+                            error("Device \"%s\" not found - aborting\n", [argValue UTF8String]);
+                            return 128;
+                        }
+                        ++i;
+                    }
+                    break;
                 case 'd':
                     if (i+1 < argc) {
                         device = [self deviceNamed:argValue];
@@ -176,6 +189,7 @@
 
     // start capturing video, start a run loop
     if ([self startSession:device
+               audioDevice:audio_device
               recordingDuration:recordingDuration
                     encodingPreset:encodingPreset
                         delaySeconds:delaySeconds
@@ -217,6 +231,28 @@
     } else {
         [connectedDevices addObjectsFromArray:[AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo]];
         [connectedDevices addObjectsFromArray:[AVCaptureDevice devicesWithMediaType:AVMediaTypeMuxed]];
+    }
+}
+
+- (void)discoverAudioDevices {
+    verbose("(discovering audio devices)\n");
+    connectedAudioDevices = [NSMutableArray array];
+
+    if (@available(macOS 10.15, *)) {
+        AVCaptureDeviceDiscoverySession *discoverySession = [
+                AVCaptureDeviceDiscoverySession
+                discoverySessionWithDeviceTypes:
+                    @[AVCaptureDeviceTypeBuiltInMicrophone, AVCaptureDeviceTypeExternalUnknown]
+                mediaType:NULL
+                position:AVCaptureDevicePositionUnspecified
+            ];
+        for (AVCaptureDevice *device in discoverySession.devices) {
+          if([device hasMediaType:AVMediaTypeAudio]) {
+            [connectedAudioDevices addObject: device];
+          }
+        }
+    } else {
+        [connectedAudioDevices addObjectsFromArray:[AVCaptureDevice devicesWithMediaType:AVMediaTypeAudio]];
     }
 }
 
@@ -263,6 +299,17 @@
 	} else {
 		console("No video devices found.\n");
 	}
+
+    deviceCount = [connectedAudioDevices count];
+    if (deviceCount > 0) {
+        console("Found %li connected audio devices:\n", deviceCount);
+        for (AVCaptureDevice *device in connectedAudioDevices) {
+            console("* %s\n", [[device localizedName] UTF8String]);
+        }
+    } else {
+        console("No video devices found.\n");
+    }
+    
 }
 
 - (NSString *)defaultGeneratedFilename {
@@ -294,9 +341,24 @@
 }
 
 /**
+ * Returns a device matching on localizedName or nil if not found
+ */
+- (AVCaptureDevice *)deviceAudioNamed:(NSString *)name {
+  AVCaptureDevice *device = nil;
+  for (AVCaptureDevice *thisDevice in connectedAudioDevices) {
+    if ([name isEqualToString:[thisDevice localizedName]]) {
+      device = thisDevice;
+    }
+  }
+
+  return device;
+}
+
+/**
  * Start a capture session on a device, saving to filePath for recordSeconds
  */
 - (BOOL)startSession:(AVCaptureDevice *)videoDevice
+         audioDevice:(AVCaptureDevice *  _Nullable)audioDevice
    recordingDuration:(NSNumber *)recordingDuration
 			encodingPreset:(NSString *)encodingPreset
 				delaySeconds:(NSNumber *)delaySeconds
@@ -332,8 +394,17 @@
 
 		// add audio input (unless noAudio)
 		if (!noAudio) {
-		  [self addAudioDevice:videoDevice];
+            
+            if (audioDevice){
+                verbose("Using audio device\n");
+                [self addAudioDevice:audioDevice];
+            }else{
+                [self addAudioDevice:videoDevice];
+            }
+            
 		}
+        
+        
 
 		verbose("(adding movie file output)\n");
 		movieFileOutput = [[AVCaptureMovieFileOutput alloc] init];
@@ -440,6 +511,7 @@
 
   // if the video device doesn't supply audio, add a default audio device (if possible)
   if (![videoDevice hasMediaType:AVMediaTypeAudio] && ![videoDevice hasMediaType:AVMediaTypeMuxed]) {
+      verbose("Adding default audio\n");
 		AVCaptureDevice *audioDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
     AVCaptureDeviceInput *audioInput = [AVCaptureDeviceInput deviceInputWithDevice:audioDevice error:&nserror];
 
@@ -454,6 +526,19 @@
 			error("Audio device is not connected or available\n");
 			verbose_error("%s\n", [[nserror localizedDescription] UTF8String]);
 		}
+  }else{
+      if (videoDevice) {
+          AVCaptureDeviceInput *audioInput = [AVCaptureDeviceInput deviceInputWithDevice:videoDevice error:&nserror];
+          if ([session canAddInput:audioInput]) {
+              [session addInput:audioInput];
+              success = YES;
+          } else {
+              error("Could not add the audio device to the session\n");
+          }
+      } else {
+          error("Audio device is not connected or available\n");
+          verbose_error("%s\n", [[nserror localizedDescription] UTF8String]);
+      }
   }
 
 	return success;

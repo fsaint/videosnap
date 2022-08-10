@@ -22,6 +22,7 @@
     AVCaptureConnection *conn;
     AVCaptureMovieFileOutput *movieFileOutput;
     NSMutableArray *connectedDevices;
+    NSMutableArray *connectedAudioDevices;
     BOOL isVerbose;
     NSString *filePath;
 }
